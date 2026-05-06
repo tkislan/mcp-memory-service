@@ -260,6 +260,24 @@ For Claude Code (local development), also allowlist:
 | `http://localhost:6274/oauth/callback` | Claude Code OAuth |
 | `http://localhost:6274/oauth/callback/debug` | Claude Code debug |
 
+### IDE / Native-Client Schemes
+
+Some IDEs and native clients deliver the OAuth callback via a custom URI
+scheme instead of HTTP. By default, the server's Dynamic Client Registration
+endpoint only accepts `https://`, loopback `http://`, and the placeholder
+`com.example.app` / `myapp` schemes. To accept additional schemes (such as
+Cursor IDE's `cursor://...`), set `MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES`:
+
+```bash
+# Cursor IDE OAuth callback uses cursor://...
+MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES=cursor
+```
+
+Multiple schemes can be comma-separated (e.g. `cursor,vscode`). The setting
+is additive and cannot weaken built-in protections — dangerous schemes
+(`javascript`, `data`, `file`, etc.) remain rejected even if listed here.
+See [OAuth setup](oauth-setup.md#redirect-uri-validation) for details.
+
 ### Token Management
 
 mcp-memory-service supports token expiry and refresh out of the box. claude.ai will automatically refresh tokens when they expire — no user interaction needed.

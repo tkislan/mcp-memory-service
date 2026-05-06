@@ -39,6 +39,7 @@ from ...config import (
     get_jwt_signing_key,
 )
 from .models import TokenResponse
+from .registration import DANGEROUS_REDIRECT_SCHEMES
 from .storage import get_oauth_storage
 
 OFFLINE_ACCESS_SCOPE = "offline_access"
@@ -95,14 +96,12 @@ def _loopback_redirect_matches(registered_uri: str, requested_uri: str) -> bool:
     )
 
 
-_DANGEROUS_REDIRECT_SCHEMES = frozenset({
-    "javascript",
-    "data",
-    "vbscript",
-    "file",
-    "about",
-    "blob",
-})
+# Defense-in-depth denylist for the redirect URL builder. Aligned with the
+# DCR registration denylist (``DANGEROUS_REDIRECT_SCHEMES`` in registration.py)
+# so that this belt-and-braces check is never weaker than the validation that
+# stored the redirect URI in the first place. Re-exported under the existing
+# private name for backwards compatibility with code that imported it.
+_DANGEROUS_REDIRECT_SCHEMES = DANGEROUS_REDIRECT_SCHEMES
 
 
 def _build_redirect_url(redirect_uri: str, params: dict[str, str]) -> str:
@@ -111,8 +110,10 @@ def _build_redirect_url(redirect_uri: str, params: dict[str, str]) -> str:
     Callers must pass a URI that has already been allowlisted by
     ``validate_redirect_uri``. This function adds a belt-and-braces check
     that rejects browser-executable or script-capable schemes (``javascript:``,
-    ``data:``, ``vbscript:``, ``file:``, ``about:``, ``blob:``), even if one
-    somehow slipped past the allowlist.
+    ``data:``, ``vbscript:``, ``file:``, ``about:``, ``blob:``, plus
+    extension/internal schemes like ``chrome:``, ``chrome-extension:``,
+    ``moz-extension:``, ``ms-appx:``), even if one somehow slipped past the
+    allowlist.
 
     Per RFC 8252 §7.1, native apps may legitimately register custom URI
     schemes (e.g. ``myapp://callback``), so we **denylist** dangerous schemes

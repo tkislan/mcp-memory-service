@@ -176,6 +176,50 @@ def safe_get_bool_env(env_var: str, default: bool) -> bool:
         logger.error(f"Invalid boolean value for {env_var}='{env_value}'. Expected true/false, 1/0, yes/no, on/off, enabled/disabled. Using default {default}")
         return default
 
+def safe_get_uri_scheme_set_env(env_var: str) -> frozenset[str]:
+    """
+    Safely parse a CSV environment variable into a frozenset of URI scheme tokens.
+
+    Reads the named environment variable, splits on commas, strips whitespace,
+    lowercases each entry, and validates that each remaining token matches the
+    RFC 3986 scheme grammar: ``ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )``.
+
+    Tokens that do not match (e.g. contain ``:``, ``/``, whitespace, or start
+    with a non-letter) are dropped with a warning rather than expanding the
+    allowlist with malformed data. The function never raises.
+
+    Args:
+        env_var: Environment variable name to read.
+
+    Returns:
+        Frozenset of validated lowercase scheme tokens. An unset or empty
+        environment variable yields an empty frozenset.
+    """
+    import re
+
+    env_value = os.environ.get(env_var, "")
+    if not env_value:
+        return frozenset()
+
+    # RFC 3986 §3.1 scheme grammar (after lowercasing): starts with a letter,
+    # then any of letter/digit/+/-/.
+    scheme_pattern = re.compile(r"^[a-z][a-z0-9+\-.]*$")
+
+    valid: set[str] = set()
+    for raw in env_value.split(","):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        if scheme_pattern.match(token):
+            valid.add(token)
+        else:
+            logger.warning(
+                f"Ignoring malformed URI scheme token in {env_var}: {raw!r} "
+                f"(must match RFC 3986 scheme grammar: letter then letters/digits/+/-/.)"
+            )
+
+    return frozenset(valid)
+
 def validate_and_create_path(path: str) -> str:
     """Validate and create a directory path, ensuring it's writable.
     
@@ -758,6 +802,18 @@ if CONSOLIDATION_ENABLED:
 
 # OAuth 2.1 Configuration
 OAUTH_ENABLED = safe_get_bool_env('MCP_OAUTH_ENABLED', False)
+
+# Additional redirect URI schemes accepted by Dynamic Client Registration.
+# This is ADDITIVE: it extends, never replaces, the built-in defaults
+# (https, http for loopback, com.example.app, myapp). Dangerous schemes
+# (javascript, data, file, vbscript, about, chrome, chrome-extension,
+# moz-extension, ms-appx, blob) remain blocked even if listed here.
+#
+# Example: MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES=cursor
+# Multiple values are comma-separated, e.g. "cursor,vscode".
+OAUTH_ADDITIONAL_REDIRECT_SCHEMES = safe_get_uri_scheme_set_env(
+    "MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES"
+)
 
 # DCR Registration Key (optional endpoint protection for /oauth/register)
 # WARNING: RFC 7591 DCR is intentionally open by design to allow dynamic clients.

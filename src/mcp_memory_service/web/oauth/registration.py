@@ -32,11 +32,41 @@ from .models import (
     RegisteredClient
 )
 from .storage import get_oauth_storage
-from mcp_memory_service.config import DCR_REGISTRATION_KEY
+from mcp_memory_service.config import (
+    DCR_REGISTRATION_KEY,
+    OAUTH_ADDITIONAL_REDIRECT_SCHEMES,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# Built-in default redirect URI schemes accepted by Dynamic Client Registration.
+# This is the baseline allowlist; operators can extend (but never replace or
+# weaken) it via MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES.
+DEFAULT_ALLOWED_REDIRECT_SCHEMES: frozenset[str] = frozenset({
+    "https",            # HTTPS (preferred)
+    "http",             # HTTP (localhost only — see per-scheme rules below)
+    "com.example.app",  # Reverse domain notation (native apps)
+    "myapp",            # Simple custom scheme (native apps)
+})
+
+# Dangerous redirect URI schemes that must NEVER be accepted, regardless of
+# operator configuration. These are browser-executable or local-resource
+# schemes that would enable token exfiltration or filesystem access.
+DANGEROUS_REDIRECT_SCHEMES: frozenset[str] = frozenset({
+    "javascript",
+    "data",
+    "file",
+    "vbscript",
+    "about",
+    "chrome",
+    "chrome-extension",
+    "moz-extension",
+    "ms-appx",
+    "blob",
+})
 
 
 def _sanitize_log_value(value: object) -> str:
@@ -49,27 +79,31 @@ def validate_redirect_uris(redirect_uris: Optional[List[str]]) -> None:
     Validate redirect URIs according to OAuth 2.1 security requirements.
 
     Uses proper URL parsing to prevent bypass attacks and validates schemes
-    against a secure whitelist to prevent dangerous scheme injection.
+    against a secure allowlist composed from the built-in defaults
+    (``DEFAULT_ALLOWED_REDIRECT_SCHEMES``) plus any operator-configured
+    additions via ``MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES``. Dangerous
+    schemes (``DANGEROUS_REDIRECT_SCHEMES``) win even if accidentally
+    configured into the additional list, so they are always rejected.
+
+    The check order is:
+
+    1. Empty / missing scheme rejection.
+    2. Dangerous-scheme rejection (security takes precedence).
+    3. Per-scheme host rules: ``http`` is only allowed for loopback hosts;
+       ``https`` requires a host.
+    4. Effective-allowlist check for any other scheme.
     """
     if not redirect_uris:
         return
 
-    # Allowed schemes - whitelist approach for security
-    ALLOWED_SCHEMES = {
-        'https',    # HTTPS (preferred)
-        'http',     # HTTP (localhost only)
-        # Native app custom schemes (common patterns)
-        'com.example.app',  # Reverse domain notation
-        'myapp',           # Simple custom scheme
-        # Add more custom schemes as needed, but NEVER allow:
-        # javascript:, data:, file:, vbscript:, about:, chrome:, etc.
-    }
-
-    # Dangerous schemes that must be blocked
-    DANGEROUS_SCHEMES = {
-        'javascript', 'data', 'file', 'vbscript', 'about', 'chrome',
-        'chrome-extension', 'moz-extension', 'ms-appx', 'blob'
-    }
+    # Read the additional schemes through the registration module attribute so
+    # that tests can monkeypatch ``registration.OAUTH_ADDITIONAL_REDIRECT_SCHEMES``
+    # and have the patched value take effect at validation time.
+    additional = OAUTH_ADDITIONAL_REDIRECT_SCHEMES
+    # Effective allowlist = defaults ∪ additions − dangerous (dangerous wins).
+    effective_allowed = (
+        DEFAULT_ALLOWED_REDIRECT_SCHEMES | additional
+    ) - DANGEROUS_REDIRECT_SCHEMES
 
     for uri in redirect_uris:
         uri_str = str(uri).strip()
@@ -96,8 +130,11 @@ def validate_redirect_uris(redirect_uris: Optional[List[str]]) -> None:
                     }
                 )
 
-            # Check for dangerous schemes first (security)
-            if parsed.scheme.lower() in DANGEROUS_SCHEMES:
+            scheme = parsed.scheme.lower()
+
+            # Check for dangerous schemes first (security takes precedence
+            # even if the operator listed them in additional schemes).
+            if scheme in DANGEROUS_REDIRECT_SCHEMES:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
@@ -107,7 +144,7 @@ def validate_redirect_uris(redirect_uris: Optional[List[str]]) -> None:
                 )
 
             # For HTTP scheme, enforce strict localhost validation
-            if parsed.scheme.lower() == 'http':
+            if scheme == 'http':
                 if not parsed.netloc:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,7 +176,7 @@ def validate_redirect_uris(redirect_uris: Optional[List[str]]) -> None:
                     )
 
             # For HTTPS, allow any valid hostname (production requirement)
-            elif parsed.scheme.lower() == 'https':
+            elif scheme == 'https':
                 if not parsed.netloc:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -149,13 +186,17 @@ def validate_redirect_uris(redirect_uris: Optional[List[str]]) -> None:
                         }
                     )
 
-            # For custom schemes (native apps), validate they're in allowed list
-            elif parsed.scheme.lower() not in [s.lower() for s in ALLOWED_SCHEMES]:
+            # For custom schemes (native apps), validate they're in the
+            # effective allowlist (defaults ∪ configured additions).
+            elif scheme not in effective_allowed:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail={
                         "error": "invalid_redirect_uri",
-                        "error_description": f"Unsupported scheme '{parsed.scheme}'. Allowed: {', '.join(sorted(ALLOWED_SCHEMES))}"
+                        "error_description": (
+                            f"Unsupported scheme '{parsed.scheme}'. "
+                            f"Allowed: {', '.join(sorted(effective_allowed))}"
+                        )
                     }
                 )
 

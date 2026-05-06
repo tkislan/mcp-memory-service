@@ -53,6 +53,36 @@ python tests/integration/test_oauth_flow.py http://localhost:8000
 | `MCP_OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `MCP_OAUTH_AUTHORIZATION_CODE_EXPIRE_MINUTES` | `10` | Authorization code lifetime |
 | `MCP_OAUTH_REFRESH_TOKEN_EXPIRE_DAYS` | `30` | Refresh token lifetime (issued only when `offline_access` scope is requested) |
+| `MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES` | _(unset)_ | Comma-separated extra redirect URI schemes accepted by Dynamic Client Registration. Additive — extends the built-in defaults; cannot weaken them. Example: `cursor` (for Cursor IDE) or `cursor,vscode`. |
+
+### Redirect URI Validation
+
+Dynamic Client Registration (`POST /oauth/register`) validates every
+`redirect_uri` before storing the client. The scheme is checked against an
+allowlist; the host and other URI components are then checked per-scheme.
+
+**Default allowlist:**
+
+- `https://...` — any host
+- `http://localhost:...`, `http://127.0.0.1:...`, `http://[::1]:...` — loopback only (RFC 8252)
+- `com.example.app://...` and `myapp://...` — placeholder native-app schemes
+
+**Additional schemes** can be enabled via `MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES`
+(comma-separated). For example, to allow Cursor IDE's `cursor://...` callback:
+
+```bash
+export MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES=cursor
+```
+
+The setting is **additive** — it extends, never replaces, the defaults. Each
+token must be a valid RFC 3986 scheme name (letter followed by letters,
+digits, `+`, `-`, or `.`); malformed entries are dropped with a warning.
+
+**Always-blocked dangerous schemes** (cannot be enabled even if listed in
+`MCP_OAUTH_ADDITIONAL_REDIRECT_SCHEMES`): `javascript`, `data`, `file`,
+`vbscript`, `about`, `chrome`, `chrome-extension`, `moz-extension`,
+`ms-appx`, `blob`. These are rejected with `invalid_redirect_uri` to prevent
+token-exfiltration and local-resource bypasses.
 
 ### Example Configuration
 

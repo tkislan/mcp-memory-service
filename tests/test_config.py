@@ -1,4 +1,5 @@
 """Tests for config.py environment variable parsing robustness."""
+import logging
 import os
 import pytest
 
@@ -65,6 +66,95 @@ def test_safe_get_int_env_respects_max_value():
         os.environ.pop('_TEST_SAFE_INT_ENV', None)
         if original is not None:
             os.environ['_TEST_SAFE_INT_ENV'] = original
+
+
+# ---------------------------------------------------------------------------
+# Tests for safe_get_uri_scheme_set_env (CSV URI scheme parser)
+# ---------------------------------------------------------------------------
+
+def test_safe_get_uri_scheme_set_env_lowercases_dedupes_trims_and_drops_empties(
+    monkeypatch,
+):
+    """The CSV parser must trim whitespace, lowercase, dedupe, and drop empties."""
+    from mcp_memory_service.config import safe_get_uri_scheme_set_env
+
+    monkeypatch.setenv(
+        "_TEST_OAUTH_ADDITIONAL_SCHEMES",
+        " Cursor, cursor,,MYAPP , com.example.App ",
+    )
+
+    result = safe_get_uri_scheme_set_env("_TEST_OAUTH_ADDITIONAL_SCHEMES")
+
+    assert isinstance(result, frozenset)
+    assert result == frozenset({"cursor", "myapp", "com.example.app"})
+
+
+def test_safe_get_uri_scheme_set_env_empty_value_returns_empty(monkeypatch):
+    """An empty env var value must yield an empty frozenset."""
+    from mcp_memory_service.config import safe_get_uri_scheme_set_env
+
+    monkeypatch.setenv("_TEST_OAUTH_ADDITIONAL_SCHEMES", "")
+
+    result = safe_get_uri_scheme_set_env("_TEST_OAUTH_ADDITIONAL_SCHEMES")
+
+    assert result == frozenset()
+
+
+def test_safe_get_uri_scheme_set_env_unset_returns_empty(monkeypatch):
+    """An unset env var must yield an empty frozenset (no exception)."""
+    from mcp_memory_service.config import safe_get_uri_scheme_set_env
+
+    monkeypatch.delenv("_TEST_OAUTH_ADDITIONAL_SCHEMES", raising=False)
+
+    result = safe_get_uri_scheme_set_env("_TEST_OAUTH_ADDITIONAL_SCHEMES")
+
+    assert result == frozenset()
+
+
+def test_safe_get_uri_scheme_set_env_drops_malformed_with_warning(
+    monkeypatch, caplog
+):
+    """Malformed scheme tokens must be dropped and at least one warning emitted.
+
+    Per RFC 3986 §3.1, a scheme name must start with a letter and may then
+    contain only letters, digits, ``+``, ``-``, or ``.``. Tokens with ``:``,
+    spaces, or a leading digit are malformed and must be ignored.
+    """
+    from mcp_memory_service.config import safe_get_uri_scheme_set_env
+
+    monkeypatch.setenv(
+        "_TEST_OAUTH_ADDITIONAL_SCHEMES",
+        "cursor, javascript:foo, 1bad, has space, com.example.app",
+    )
+
+    # The helper logs to the ``mcp_memory_service.config`` logger.
+    with caplog.at_level(logging.WARNING, logger="mcp_memory_service.config"):
+        result = safe_get_uri_scheme_set_env("_TEST_OAUTH_ADDITIONAL_SCHEMES")
+
+    # Only the syntactically valid scheme tokens survive.
+    assert result == frozenset({"cursor", "com.example.app"})
+
+    # At least one warning must be emitted for the rejected tokens.
+    warning_records = [
+        rec for rec in caplog.records if rec.levelno >= logging.WARNING
+    ]
+    assert warning_records, (
+        f"Expected at least one warning for malformed tokens, got: "
+        f"{[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+
+    combined = "\n".join(rec.getMessage() for rec in warning_records)
+    # The warnings should reference the env var name so operators can find
+    # the offending configuration.
+    assert "_TEST_OAUTH_ADDITIONAL_SCHEMES" in combined
+
+
+def test_oauth_additional_redirect_schemes_is_frozenset_at_import_time():
+    """The mid-import bound config attribute must be a frozenset."""
+    import mcp_memory_service.config as cfg
+
+    assert hasattr(cfg, "OAUTH_ADDITIONAL_REDIRECT_SCHEMES")
+    assert isinstance(cfg.OAUTH_ADDITIONAL_REDIRECT_SCHEMES, frozenset)
 
 
 # ---------------------------------------------------------------------------
